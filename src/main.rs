@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use derive_more::Display;
+use itertools::Itertools;
 use reqwest::blocking::{multipart, Client};
 use serde::{
     de::{self, DeserializeOwned, Unexpected},
@@ -25,36 +26,72 @@ fn main() -> anyhow::Result<()> {
 
     let client = Client::new();
     let config: Config = toml::from_str(&fs_err::read_to_string("config.toml")?)?;
-    for (domain, tokens) in &config.tokens {
-        let form = multipart::Form::new()
-            .text("page", "1")
-            .text("count", "100")
-            .text("sort_by", "name")
-            .text("sort_dir", "asc")
-            .text("queries", "[]")
-            .text("user_ids", "[]");
-        let result: EmojiAdminList = send(&client, domain, tokens, "emoji.adminList", form)?;
-        println!("{:?}", result);
+    for (workspace, tokens) in &config.tokens {
+        for emoji in get_emojis(&client, workspace, tokens)? {
+            if let (false, Some(url)) = (emoji.is_alias, &emoji.url) {
+                let values = [
+                    emoji.name.0.clone(),
+                    format!(r#"=IMAGE("{}")"#, url),
+                    emoji.synonyms.iter().join(", "),
+                ];
+                println!("{}", values.join("\t"));
+            }
+        }
     }
 
     Ok(())
 }
 
+fn get_emojis(
+    client: &Client,
+    workspace: &WorkspaceDomain,
+    tokens: &TokenConfig,
+) -> anyhow::Result<Vec<Emoji>> {
+    let params = EmojiAdminListParams { page: 1, count: 1 };
+    let res = emoji_admin_list(client, workspace, tokens, params)?;
+    let params = EmojiAdminListParams {
+        page: 1,
+        count: res.paging.total,
+    };
+    let res = emoji_admin_list(client, workspace, tokens, params)?;
+    Ok(res.emoji)
+}
+
 fn send<T: DeserializeOwned>(
     client: &Client,
-    workspace_domain: &WorkspaceDomain,
+    workspace: &WorkspaceDomain,
     tokens: &TokenConfig,
     method: &'static str,
     form: multipart::Form,
 ) -> anyhow::Result<T> {
     let form = form.text("token", tokens.xoxc.clone());
-    let url = format!("https://{}-2020.slack.com/api/{}", workspace_domain, method);
+    let url = format!("https://{}-2020.slack.com/api/{}", workspace, method);
     let response = client
         .post(url)
         .header("cookie", format!("d={}", tokens.xoxd))
         .multipart(form)
         .send()?;
     Ok(response.json()?)
+}
+
+struct EmojiAdminListParams {
+    page: usize,
+    count: usize,
+}
+fn emoji_admin_list(
+    client: &Client,
+    workspace_domain: &WorkspaceDomain,
+    tokens: &TokenConfig,
+    params: EmojiAdminListParams,
+) -> anyhow::Result<EmojiAdminList> {
+    let form = multipart::Form::new()
+        .text("page", params.page.to_string())
+        .text("count", params.count.to_string())
+        .text("sort_by", "name")
+        .text("sort_dir", "asc")
+        .text("queries", "[]")
+        .text("user_ids", "[]");
+    send(client, workspace_domain, tokens, "emoji.adminList", form)
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,12 +126,13 @@ pub struct Emoji {
     pub name: EmojiName,
     pub synonyms: Vec<EmojiName>,
     pub team_id: String,
-    pub url: Url,
+    #[serde(with = "string_empty_as_none")]
+    pub url: Option<Url>,
     pub user_display_name: String,
     pub user_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Display, Deserialize)]
 pub struct EmojiName(pub String);
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Display, Deserialize)]
