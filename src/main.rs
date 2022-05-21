@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use clap::Parser;
 use derive_more::Display;
 use itertools::Itertools;
 use reqwest::blocking::{multipart, Client};
@@ -21,9 +22,30 @@ struct TokenConfig {
     xoxd: String,
 }
 
+#[derive(clap::Parser)]
+struct Args {
+    #[clap(subcommand)]
+    subcommand: Subcommand,
+}
+
+#[derive(clap::Subcommand)]
+enum Subcommand {
+    MakeSpreadsheet(MakeSpreadsheet),
+}
+
+#[derive(clap::Args)]
+struct MakeSpreadsheet {}
+
 fn main() -> anyhow::Result<()> {
     env_logger::init();
+    let args = Args::parse();
 
+    match &args.subcommand {
+        Subcommand::MakeSpreadsheet(_) => make_spreadsheet(),
+    }
+}
+
+fn make_spreadsheet() -> anyhow::Result<()> {
     let client = Client::new();
     let config: Config = toml::from_str(&fs_err::read_to_string("config.toml")?)?;
     for (workspace, tokens) in &config.tokens {
