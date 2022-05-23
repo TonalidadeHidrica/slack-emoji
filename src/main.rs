@@ -347,6 +347,8 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
             stop = true;
         }
 
+        info!("Line {i}");
+
         let tokens = &config.tokens[&query.dst.workspace];
         if let Err(e) = (|| match &query.src {
             _ if stop => bail!("Aborted on Ctrl-C"),
