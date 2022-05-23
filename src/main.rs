@@ -4,6 +4,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     str::FromStr,
+    sync::mpsc,
     thread::sleep,
     time::Duration,
 };
@@ -306,10 +307,24 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
             }
         }
     });
+
+    let (ctrlc_tx, ctrlc_rx) = mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = ctrlc_tx.send(());
+    })?;
+    println!("Starting to process the query.  Press Ctrl+C to abort.");
+
     let mut new_emojis = HashMap::new();
+    let mut stop = false;
     for (i, query) in &queries {
+        if ctrlc_rx.try_recv().is_ok() && !stop {
+            error!("Aborting on Ctrl-C.");
+            stop = true;
+        }
+
         let tokens = &config.tokens[&query.dst.workspace];
         if let Err(e) = (|| match &query.src {
+            _ if stop => bail!("Aborted on Ctrl-C"),
             EmojiLocation::Path(path) => {
                 upload_emoji(&client, tokens, path, &query.dst, &mut new_emojis)
             }
@@ -365,9 +380,13 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
                     error!("Failed to write to log file: {:?}", e);
                 }
             }
-            error!("Failed to execute line {i} ({query:?}): {e}");
+            if !stop {
+                error!("Failed to execute line {i} ({query:?}): {e}");
+            }
         }
-        sleep(Duration::from_secs_f64(0.5));
+        if !stop {
+            sleep(Duration::from_secs_f64(0.5));
+        }
     }
     Ok(())
 }
