@@ -309,13 +309,7 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
         let tokens = &config.tokens[&query.dst.workspace];
         if let Err(e) = (|| match &query.src {
             EmojiLocation::Path(path) => {
-                info!("Uploading emoji from {path:?} to {:?}", query.dst);
-                let params = EmojiAddParams {
-                    name: query.dst.name.clone(),
-                    content: EmojiAddContent::New(File::open(path)?),
-                };
-                new_emojis.insert(&query.dst, path);
-                emoji_add(&client, &query.dst.workspace, tokens, params)
+                upload_emoji(&client, tokens, path, &query.dst, &mut new_emojis)
             }
             EmojiLocation::Workspace(src) => {
                 if src.workspace == query.dst.workspace {
@@ -329,24 +323,31 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
                     };
                     emoji_add(&client, &query.dst.workspace, tokens, params)
                 } else if let Some(emoji) = emojis[&src.workspace].get(&src.name) {
-                    info!("Copying emoji from {src:?} to {dst:?}", dst = query.dst);
-                    let data = client.get(emoji.url.clone().unwrap()).send()?;
-                    let params = EmojiAddParams {
-                        name: query.dst.name.clone(),
-                        content: EmojiAddContent::New(data),
-                    };
-                    emoji_add(&client, &query.dst.workspace, tokens, params)
+                    copy_emoji_by_url(
+                        &client,
+                        tokens,
+                        emoji.url.as_ref().unwrap(),
+                        src,
+                        &query.dst,
+                        &mut new_emojis,
+                    )
+                } else if let Some(old_src) = new_emojis.get(&src) {
+                    info!("{src:?} is a new emoji.  Using {old_src:?} as the source.");
+                    match old_src {
+                        NewEmojiSource::Path(path) => {
+                            upload_emoji(&client, tokens, path, &query.dst, &mut new_emojis)
+                        }
+                        NewEmojiSource::Url(url) => copy_emoji_by_url(
+                            &client,
+                            tokens,
+                            url,
+                            src,
+                            &query.dst,
+                            &mut new_emojis,
+                        ),
+                    }
                 } else {
-                    info!("{src:?} is a new emoji");
-                    let path = &new_emojis[&src];
-                    info!("Uploading emoji from {path:?} to {:?}", query.dst);
-                    let params = EmojiAddParams {
-                        name: query.dst.name.clone(),
-                        content: EmojiAddContent::New(File::open(path)?),
-                    };
-                    #[allow(mutable_borrow_reservation_conflict)]
-                    new_emojis.insert(&query.dst, path);
-                    emoji_add(&client, &query.dst.workspace, tokens, params)
+                    bail!("{src:?} is a new emoji, but it was probably accidentally skipped")
                 }
             }
         })() {
@@ -366,6 +367,46 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+enum NewEmojiSource<'a> {
+    Url(&'a Url),
+    Path(&'a PathBuf),
+}
+
+fn upload_emoji<'a>(
+    client: &Client,
+    tokens: &TokenConfig,
+    #[allow(clippy::ptr_arg)] path: &'a PathBuf,
+    dst: &'a WorkspaceEmoji,
+    new_emojis: &mut HashMap<&'a WorkspaceEmoji, NewEmojiSource<'a>>,
+) -> anyhow::Result<EmojiAddResponse> {
+    info!("Uploading emoji from {path:?} to {:?}", dst);
+    let params = EmojiAddParams {
+        name: dst.name.clone(),
+        content: EmojiAddContent::New(File::open(path)?),
+    };
+    new_emojis.insert(dst, NewEmojiSource::Path(path));
+    emoji_add(client, &dst.workspace, tokens, params)
+}
+
+fn copy_emoji_by_url<'a>(
+    client: &Client,
+    tokens: &TokenConfig,
+    url: &'a Url,
+    src: &'a WorkspaceEmoji,
+    dst: &'a WorkspaceEmoji,
+    new_emojis: &mut HashMap<&'a WorkspaceEmoji, NewEmojiSource<'a>>,
+) -> anyhow::Result<EmojiAddResponse> {
+    info!("Copying emoji from {src:?} to {dst:?}");
+    let data = client.get(url.clone()).send()?;
+    let params = EmojiAddParams {
+        name: dst.name.clone(),
+        content: EmojiAddContent::New(data),
+    };
+    new_emojis.insert(dst, NewEmojiSource::Url(url));
+    emoji_add(client, &dst.workspace, tokens, params)
 }
 
 fn get_emojis(
