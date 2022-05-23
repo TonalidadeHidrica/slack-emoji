@@ -9,13 +9,13 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Local, Utc};
 use clap::Parser;
 use derive_more::{Display, FromStr};
 use fs_err::{File, OpenOptions};
 use itertools::Itertools;
-use log::{error, info};
+use log::{error, info, warn};
 use once_cell::unsync::Lazy;
 use reqwest::blocking::{multipart, Client};
 use serde::{
@@ -23,6 +23,7 @@ use serde::{
     Deserialize, Deserializer,
 };
 use serde_with::{rust::string_empty_as_none, serde_as, TimestampSeconds};
+use thiserror::Error;
 use url::Url;
 
 #[derive(Deserialize)]
@@ -174,7 +175,10 @@ fn make_spreadsheet(config: &Config) -> anyhow::Result<()> {
 fn make_queries(config: &Config, args: &MakeQueries) -> Result<(), anyhow::Error> {
     let client = Client::new();
     let emojis = get_emojis(&client, &args.src, &config.tokens[&args.src])?;
-    let emojis = emojis.iter().map(|e| (&e.name, e)).collect::<HashMap<_, _>>();
+    let emojis = emojis
+        .iter()
+        .map(|e| (&e.name, e))
+        .collect::<HashMap<_, _>>();
     for name in BufReader::new(File::open(&args.emoji_list)?).lines() {
         let name = EmojiName(name?);
         println!("{}:{}\t{}", args.src, name, args.dst);
@@ -347,11 +351,15 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
             stop = true;
         }
 
-        info!("Line {i}");
+        if !stop {
+            info!("Line {i}");
+        }
 
         let tokens = &config.tokens[&query.dst.workspace];
-        if let Err(e) = (|| match &query.src {
-            _ if stop => bail!("Aborted on Ctrl-C"),
+        let mut cnt = 0;
+        #[allow(clippy::redundant_closure_call)]
+        while let Err(e) = (|| match &query.src {
+            _ if stop => Err(anyhow!("Aborted on Ctrl-C").into()),
             EmojiLocation::Path(path) => {
                 upload_emoji(&client, tokens, path, &query.dst, &mut new_emojis)
             }
@@ -391,24 +399,35 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
                         ),
                     }
                 } else {
-                    bail!("{src:?} is a new emoji, but it was probably accidentally skipped")
+                    Err(
+                        anyhow!("{src:?} is a new emoji, but it was probably accidentally skipped")
+                            .into(),
+                    )
                 }
             }
         })() {
-            let e = e
-                .to_string()
-                .chars()
-                .filter(|&c| c != '\t' && c != '\r' && c != '\n')
-                .collect::<String>();
-            if let Some(log) = &mut *log {
-                if let Err(e) =
-                    writeln!(log, "{}\t{}\t{}\t{e}", Local::now(), &query.src, query.dst)
-                {
-                    error!("Failed to write to log file: {:?}", e);
+            cnt += 1;
+            if let EmojiAddError::RateLimited = e {
+                let secs = 2u64.pow(cnt);
+                warn!("Rate limited {cnt}/5. Waiting for {secs} seconds");
+                sleep(Duration::from_secs(secs));
+            } else {
+                let e = e
+                    .to_string()
+                    .chars()
+                    .filter(|&c| c != '\t' && c != '\r' && c != '\n')
+                    .collect::<String>();
+                if let Some(log) = &mut *log {
+                    if let Err(e) =
+                        writeln!(log, "{}\t{}\t{}\t{e}", Local::now(), &query.src, query.dst)
+                    {
+                        error!("Failed to write to log file: {:?}", e);
+                    }
                 }
-            }
-            if !stop {
-                error!("Failed to execute line {i} ({query:?}): {e}");
+                if !stop {
+                    error!("Failed to execute line {i} ({query:?}): {e}");
+                }
+                break;
             }
         }
         if !stop {
@@ -430,11 +449,11 @@ fn upload_emoji<'a>(
     #[allow(clippy::ptr_arg)] path: &'a PathBuf,
     dst: &'a WorkspaceEmoji,
     new_emojis: &mut HashMap<&'a WorkspaceEmoji, NewEmojiSource<'a>>,
-) -> anyhow::Result<EmojiAddResponse> {
+) -> Result<EmojiAddResponse, EmojiAddError> {
     info!("Uploading emoji from {path:?} to {:?}", dst);
     let params = EmojiAddParams {
         name: dst.name.clone(),
-        content: EmojiAddContent::New(File::open(path)?),
+        content: EmojiAddContent::New(File::open(path).map_err(anyhow::Error::from)?),
     };
     new_emojis.insert(dst, NewEmojiSource::Path(path));
     emoji_add(client, &dst.workspace, tokens, params)
@@ -447,9 +466,12 @@ fn copy_emoji_by_url<'a>(
     src: &'a WorkspaceEmoji,
     dst: &'a WorkspaceEmoji,
     new_emojis: &mut HashMap<&'a WorkspaceEmoji, NewEmojiSource<'a>>,
-) -> anyhow::Result<EmojiAddResponse> {
+) -> Result<EmojiAddResponse, EmojiAddError> {
     info!("Copying emoji from {src:?} to {dst:?}");
-    let data = client.get(url.clone()).send()?;
+    let data = client
+        .get(url.clone())
+        .send()
+        .map_err(anyhow::Error::from)?;
     let params = EmojiAddParams {
         name: dst.name.clone(),
         content: EmojiAddContent::New(data),
@@ -518,12 +540,19 @@ enum EmojiAddContent<T> {
     Alias(EmojiName),
     New(T),
 }
+#[derive(Debug, Error)]
+enum EmojiAddError {
+    #[error("{0}")]
+    OtherError(#[from] anyhow::Error),
+    #[error("Rate limited")]
+    RateLimited,
+}
 fn emoji_add<T: Read + Send + 'static>(
     client: &Client,
     workspace_domain: &WorkspaceDomain,
     tokens: &TokenConfig,
     params: EmojiAddParams<T>,
-) -> anyhow::Result<EmojiAddResponse> {
+) -> Result<EmojiAddResponse, EmojiAddError> {
     let form = match params.content {
         EmojiAddContent::Alias(alias_for) => multipart::Form::new()
             .text("mode", "alias")
@@ -538,12 +567,15 @@ fn emoji_add<T: Read + Send + 'static>(
         }
     };
     let response: EmojiAddResponse = send(client, workspace_domain, tokens, "emoji.add", form)?;
-    if let Some(error) = response.error {
-        bail!("API returned error: {error:?}");
+    if response.error.as_deref() == Some("ratelimited") {
+        Err(EmojiAddError::RateLimited)
+    } else if let Some(error) = response.error {
+        Err(anyhow!("API returned error: {error:?}").into())
     } else if !response.ok {
-        bail!("API returned error");
+        Err(anyhow!("API returned error").into())
+    } else {
+        Ok(response)
     }
-    Ok(response)
 }
 #[derive(Debug, Deserialize)]
 pub struct EmojiAddResponse {
