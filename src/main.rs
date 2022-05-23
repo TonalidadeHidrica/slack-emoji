@@ -12,7 +12,7 @@ use std::{
 use anyhow::{bail, Context};
 use chrono::{DateTime, Local, Utc};
 use clap::Parser;
-use derive_more::Display;
+use derive_more::{Display, FromStr};
 use fs_err::{File, OpenOptions};
 use itertools::Itertools;
 use log::{error, info};
@@ -46,6 +46,7 @@ enum Subcommand {
     MakeSpreadsheet(MakeSpreadsheet),
     #[clap(alias("cp"))]
     CopyEmojis(CopyEmojis),
+    MakeQueries(MakeQueries),
 }
 
 #[derive(clap::Args)]
@@ -55,6 +56,13 @@ struct MakeSpreadsheet {}
 /// alias: cp
 struct CopyEmojis {
     file: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct MakeQueries {
+    emoji_list: PathBuf,
+    src: WorkspaceDomain,
+    dst: WorkspaceDomain,
 }
 
 #[derive(Debug)]
@@ -141,6 +149,7 @@ fn main() -> anyhow::Result<()> {
     match &args.subcommand {
         Subcommand::MakeSpreadsheet(_) => make_spreadsheet(&config),
         Subcommand::CopyEmojis(args) => copy_emojis(&config, args),
+        Subcommand::MakeQueries(args) => make_queries(&config, args),
     }
 }
 
@@ -159,6 +168,22 @@ fn make_spreadsheet(config: &Config) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn make_queries(config: &Config, args: &MakeQueries) -> Result<(), anyhow::Error> {
+    let client = Client::new();
+    let emojis = get_emojis(&client, &args.src, &config.tokens[&args.src])?;
+    let emojis = emojis.iter().map(|e| (&e.name, e)).collect::<HashMap<_, _>>();
+    for name in BufReader::new(File::open(&args.emoji_list)?).lines() {
+        let name = EmojiName(name?);
+        println!("{}:{}\t{}", args.src, name, args.dst);
+        for alias in &emojis[&name].synonyms {
+            if alias != &name {
+                println!("{}:{}\t{}:{}", args.dst, name, args.dst, alias);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -565,7 +590,7 @@ pub struct Emoji {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Display, Deserialize)]
 pub struct EmojiName(pub String);
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Display, Deserialize)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug, FromStr, Display, Deserialize)]
 #[serde(transparent)]
 pub struct WorkspaceDomain(pub String);
 
