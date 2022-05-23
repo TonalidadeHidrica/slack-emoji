@@ -69,6 +69,11 @@ struct WorkspaceEmoji {
     workspace: WorkspaceDomain,
     name: EmojiName,
 }
+#[derive(Debug)]
+struct EmojiDestination {
+    workspace: WorkspaceDomain,
+    name: Option<EmojiName>,
+}
 
 impl FromStr for EmojiLocation {
     type Err = anyhow::Error;
@@ -89,6 +94,24 @@ impl FromStr for WorkspaceEmoji {
                 name: EmojiName(y.to_string()),
             }),
             _ => bail!("Workspace emoji specifier should contain ':', found {s:?}"),
+        }
+    }
+}
+impl FromStr for EmojiDestination {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.contains(':') {
+            let WorkspaceEmoji { workspace, name } = s.parse()?;
+            Ok(EmojiDestination {
+                workspace,
+                name: Some(name),
+            })
+        } else {
+            Ok(EmojiDestination {
+                workspace: WorkspaceDomain(s.to_owned()),
+                name: None,
+            })
         }
     }
 }
@@ -145,10 +168,30 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
         .map(|(line, i)| {
             (|| match &line?.trim().split_whitespace().take(3).collect_vec()[..] {
                 [_, _, _, ..] => bail!("Too many arguments"),
-                [x, y] => {
+                [src, dst] => {
+                    let src: EmojiLocation = src.parse()?;
+                    let dst: EmojiDestination = dst.parse()?;
+                    let name = match dst.name {
+                        Some(name) => name,
+                        None => match &src {
+                            EmojiLocation::Path(path) => {
+                                let stem = path
+                                    .file_stem()
+                                    .with_context(|| format!("No filename found for {path:?}"))?;
+                                let name = stem.to_str().with_context(|| {
+                                    format!("Filename cannot be converted to UTF-8: {stem:?}")
+                                })?;
+                                EmojiName(name.to_owned())
+                            }
+                            EmojiLocation::Workspace(emoji) => emoji.name.clone(),
+                        },
+                    };
                     let query = CopyQuery {
-                        src: x.parse()?,
-                        dst: y.parse()?,
+                        src,
+                        dst: WorkspaceEmoji {
+                            workspace: dst.workspace,
+                            name,
+                        },
                     };
                     Ok((i, query))
                 }
