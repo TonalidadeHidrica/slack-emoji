@@ -4,6 +4,8 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     str::FromStr,
+    thread::sleep,
+    time::Duration,
 };
 
 use anyhow::{bail, Context};
@@ -365,6 +367,7 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
             }
             error!("Failed to execute line {i} ({query:?}): {e}");
         }
+        sleep(Duration::from_secs_f64(0.5));
     }
     Ok(())
 }
