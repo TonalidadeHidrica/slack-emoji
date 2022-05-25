@@ -489,7 +489,7 @@ fn get_emojis(
     let res = emoji_admin_list(client, workspace, tokens, params)?;
     let params = EmojiAdminListParams {
         page: 1,
-        count: res.paging.total,
+        count: res.paging.total + 1,
     };
     let res = emoji_admin_list(client, workspace, tokens, params)?;
     Ok(res.emoji)
@@ -503,7 +503,7 @@ fn send<T: DeserializeOwned>(
     form: multipart::Form,
 ) -> anyhow::Result<T> {
     let form = form.text("token", tokens.xoxc.clone());
-    let url = format!("https://{}-2020.slack.com/api/{}", workspace, method);
+    let url = format!("https://{}.slack.com/api/{}", workspace, method);
     let response = client
         .post(url)
         .header("cookie", format!("d={}", tokens.xoxd))
