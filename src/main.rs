@@ -198,7 +198,7 @@ fn copy_emojis(config: &Config, args: &CopyEmojis) -> anyhow::Result<()> {
         .lines()
         .zip(1..)
         .map(|(line, i)| {
-            (|| match &line?.trim().split_whitespace().take(3).collect_vec()[..] {
+            (|| match &line?.split_whitespace().take(3).collect_vec()[..] {
                 [_, _, _, ..] => bail!("Too many arguments"),
                 [src, dst] => {
                     let src: EmojiLocation = src.parse()?;
