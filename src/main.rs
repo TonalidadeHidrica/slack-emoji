@@ -51,7 +51,10 @@ enum Subcommand {
 }
 
 #[derive(clap::Args)]
-struct MakeSpreadsheet {}
+struct MakeSpreadsheet {
+    #[clap(long)]
+    domain: Option<WorkspaceDomain>,
+}
 
 #[derive(clap::Args)]
 /// alias: cp
@@ -148,21 +151,29 @@ fn main() -> anyhow::Result<()> {
     let config: Config = toml::from_str(&fs_err::read_to_string("config.toml")?)?;
 
     match &args.subcommand {
-        Subcommand::MakeSpreadsheet(_) => make_spreadsheet(&config),
+        Subcommand::MakeSpreadsheet(args) => make_spreadsheet(&config, args),
         Subcommand::CopyEmojis(args) => copy_emojis(&config, args),
         Subcommand::MakeQueries(args) => make_queries(&config, args),
     }
 }
 
-fn make_spreadsheet(config: &Config) -> anyhow::Result<()> {
+fn make_spreadsheet(config: &Config, args: &MakeSpreadsheet) -> anyhow::Result<()> {
     let client = Client::new();
     for (workspace, tokens) in &config.tokens {
+        if args
+            .domain
+            .as_ref()
+            .is_some_and(|domain| workspace != domain)
+        {
+            continue;
+        }
         for emoji in get_emojis(&client, workspace, tokens)? {
             if let (false, Some(url)) = (emoji.is_alias, &emoji.url) {
                 let values = [
-                    emoji.name.0.clone(),
-                    format!(r#"=IMAGE("{}")"#, url),
-                    emoji.synonyms.iter().join(", "),
+                    &workspace.0[..],
+                    &emoji.name.0,
+                    &format!(r#"=IMAGE("{}")"#, url),
+                    &emoji.synonyms.iter().join(", "),
                 ];
                 println!("{}", values.join("\t"));
             }
